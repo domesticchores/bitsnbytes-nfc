@@ -22,3 +22,11 @@ dependencies.lock
 managed_components/
 .vscode/
 
+# test files
+test-*.c
+
+# esp logs
+log.*.txt
+
+# temp markdown
+COMMANDS.md
