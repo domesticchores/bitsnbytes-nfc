@@ -46,6 +46,8 @@
 
 
 static const char *TAG = "bnb_nfc";
+static const char *I2C_TAG = "I2C";
+static const char *SPI_TAG = "SPI";
 
 void run_nfc(pn532_io_t pn532_io,esp_err_t err) {
     uint8_t uid[] = {0, 0, 0, 0, 0, 0, 0}; // Buffer to store the returned UID
@@ -82,33 +84,33 @@ void app_main()
     vTaskDelay(1000 / portTICK_PERIOD_MS);
 
     // load in I2C mode
-    ESP_LOGI(TAG, "init PN532 in I2C mode");
+    ESP_LOGI(I2C_TAG, "init PN532 in I2C mode");
     ESP_ERROR_CHECK(pn532_new_driver_i2c(SDA_PIN, SCL_PIN, RESET_PIN, IRQ_PIN, 0, &pn532_io));
 
     // ensure its loaded before doing anything
     do {
         err = pn532_init(&pn532_io);
         if (err != ESP_OK) {
-            ESP_LOGW(TAG, "failed to initialize PN532");
+            ESP_LOGW(I2C_TAG, "failed to initialize PN532");
             pn532_release(&pn532_io);
             vTaskDelay(1000 / portTICK_PERIOD_MS);
         }
     } while(err != ESP_OK);
 
-    ESP_LOGI(TAG, "get firmware version");
+    ESP_LOGI(I2C_TAG, "get firmware version");
     uint32_t version_data = 0;
     do {
         err = pn532_get_firmware_version(&pn532_io, &version_data);
         if (ESP_OK != err) {
-            ESP_LOGI(TAG, "Didn't find PN53x board");
+            ESP_LOGI(I2C_TAG, "Didn't find PN53x board");
             pn532_reset(&pn532_io);
             vTaskDelay(1000 / portTICK_PERIOD_MS);
         }
     } while (ESP_OK != err);
 
     // Log firmware infos
-    ESP_LOGI(TAG, "Found chip PN5%x", (unsigned int)(version_data >> 24) & 0xFF);
-    ESP_LOGI(TAG, "Firmware ver. %d.%d", (int)(version_data >> 16) & 0xFF, (int)(version_data >> 8) & 0xFF);
+    ESP_LOGI(I2C_TAG, "Found chip PN5%x", (unsigned int)(version_data >> 24) & 0xFF);
+    ESP_LOGI(I2C_TAG, "Firmware ver. %d.%d", (int)(version_data >> 16) & 0xFF, (int)(version_data >> 8) & 0xFF);
 
     // init SPI
        int fd;
@@ -121,10 +123,10 @@ void app_main()
 
     fd = open(device, O_RDWR);
     if (fd < 0) {
-        printf("Opening device %s for writing failed, errno=%d.\n", device, errno);
+        ESP_LOGI(SPI_TAG,"Opening device %s for writing failed, errno=%d.\n", device, errno);
         return;
     } else {
-        printf("Opening device %s for writing OK, fd=%d.\n", device, fd);
+        ESP_LOGI(SPI_TAG,"Opening device %s for writing OK, fd=%d.\n", device, fd);
     }
 
     cfg.flags = SPI_MODE_0;
@@ -135,12 +137,12 @@ void app_main()
     cfg.master.clock = SPI_DEVICE_CLOCK;
     ret = ioctl(fd, SPIIOCSCFG, &cfg);
     if (ret < 0) {
-        printf("Configure SPI failed, errno=%d.\n", errno);
+        ESP_LOGI(SPI_TAG,"Configure SPI failed, errno=%d.\n", errno);
         return;
     }
+    // loop infinitely. 
     while (1)
     {
-
         spi_ex_msg_t msg;
 
         memset(recv_buffer, 0, SPI_RECV_BUF_SIZE);
@@ -149,11 +151,11 @@ void app_main()
         msg.size = SPI_RECV_BUF_SIZE;
         ret = ioctl(fd, SPIIOCEXCHANGE, &msg);
         if (ret < 0) {
-            ESP_LOGI(TAG,"Receive total %d bytes from device failed, errno=%d", SPI_RECV_BUF_SIZE, errno);
+            ESP_LOGI(SPI_TAG,"Receive total %d bytes from device failed, errno=%d", SPI_RECV_BUF_SIZE, errno);
             return;
         } else {
             if (msg.size) {
-                ESP_LOGI(TAG,"Receive total %d bytes from device: %s\n", (int)msg.size, recv_buffer);
+                ESP_LOGI(SPI_TAG,"Receive total %d bytes from device: %s\n", (int)msg.size, recv_buffer);
             }
             // connect to nfc
             run_nfc(pn532_io, err);
