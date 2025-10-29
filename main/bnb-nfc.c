@@ -53,22 +53,23 @@ void run_nfc(pn532_io_t pn532_io,esp_err_t err) {
     int repeater = 0;
 
     if (repeater > 0) {
-            ESP_LOG_BUFFER_HEX_LEVEL(TAG, uid, uid_length, ESP_LOG_INFO);
-            repeater--;
-        }
+        ESP_LOG_BUFFER_HEX_LEVEL(TAG, uid, uid_length, ESP_LOG_INFO);
+        repeater--;
+    }
+    ESP_LOGI(TAG, "Waiting for an ISO14443A Card ...");
 
-        // if the uid is 4 bytes (Mifare Classic) or 7 bytes (Mifare Ultralight)
-        err = pn532_read_passive_target_id(&pn532_io, PN532_BRTY_ISO14443A_106KBPS, uid, &uid_length, 1000);
+    // if the uid is 4 bytes (Mifare Classic) or 7 bytes (Mifare Ultralight)
+    err = pn532_read_passive_target_id(&pn532_io, PN532_BRTY_ISO14443A_106KBPS, uid, &uid_length, 1000);
 
-        if (ESP_OK == err)
-        {
-            ESP_LOG_BUFFER_HEX_LEVEL(TAG, uid, uid_length, ESP_LOG_INFO);
-            repeater = 10;
+    if (ESP_OK == err)
+    {
+        ESP_LOG_BUFFER_HEX_LEVEL(TAG, uid, uid_length, ESP_LOG_INFO);
+        repeater = 10;
 
-            vTaskDelay(1000 / portTICK_PERIOD_MS);
-        } else {
-            ESP_LOGI(TAG,"NULL");
-        }
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+    } else {
+        ESP_LOGI(TAG,"NULL");
+    }
 }
 
 void app_main()
@@ -137,7 +138,6 @@ void app_main()
         printf("Configure SPI failed, errno=%d.\n", errno);
         return;
     }
-    ESP_LOGI(TAG, "Waiting for an ISO14443A Card ...");
     while (1)
     {
 
@@ -149,11 +149,11 @@ void app_main()
         msg.size = SPI_RECV_BUF_SIZE;
         ret = ioctl(fd, SPIIOCEXCHANGE, &msg);
         if (ret < 0) {
-            printf("Receive total %d bytes from device failed, errno=%d", SPI_RECV_BUF_SIZE, errno);
+            ESP_LOGI(TAG,"Receive total %d bytes from device failed, errno=%d", SPI_RECV_BUF_SIZE, errno);
             return;
         } else {
             if (msg.size) {
-                printf("Receive total %d bytes from device: %s\n", (int)msg.size, recv_buffer);
+                ESP_LOGI(TAG,"Receive total %d bytes from device: %s\n", (int)msg.size, recv_buffer);
             }
             // connect to nfc
             run_nfc(pn532_io, err);
