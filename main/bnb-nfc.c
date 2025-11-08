@@ -49,15 +49,15 @@ static const char *TAG = "bnb_nfc";
 static const char *I2C_TAG = "I2C";
 static const char *SPI_TAG = "SPI";
 
-void run_nfc(pn532_io_t pn532_io,esp_err_t err) {
-    uint8_t uid[] = {0, 0, 0, 0, 0, 0, 0}; // Buffer to store the returned UID
-    uint8_t uid_length;                     // Length of the UID (4 or 7 bytes depending on ISO14443A card type)
-    int repeater = 0;
+struct nfc_resp {
+    uint8_t uid[7];
+    uint8_t length;
+};
 
-    if (repeater > 0) {
-        ESP_LOG_BUFFER_HEX_LEVEL(TAG, uid, uid_length, ESP_LOG_INFO);
-        repeater--;
-    }
+struct nfc_resp run_nfc(pn532_io_t pn532_io,esp_err_t err) {
+    uint8_t uid[7] = {0};
+    uint8_t uid_length = sizeof(uid);
+
     ESP_LOGI(TAG, "Waiting for an ISO14443A Card ...");
 
     // if the uid is 4 bytes (Mifare Classic) or 7 bytes (Mifare Ultralight)
@@ -65,12 +65,17 @@ void run_nfc(pn532_io_t pn532_io,esp_err_t err) {
 
     if (ESP_OK == err)
     {
+        struct nfc_resp r = {0};
         ESP_LOG_BUFFER_HEX_LEVEL(TAG, uid, uid_length, ESP_LOG_INFO);
-        repeater = 10;
-
+        memcpy(r.uid,uid,sizeof(uid));
+        r.length = sizeof(uid);
         vTaskDelay(1000 / portTICK_PERIOD_MS);
+        return r;
     } else {
+        struct nfc_resp r = {0};
         ESP_LOGI(TAG,"NULL");
+        return r;
+        
     }
 }
 
@@ -158,7 +163,9 @@ void app_main()
                 ESP_LOGI(SPI_TAG,"Receive total %d bytes from device: %s\n", (int)msg.size, recv_buffer);
             }
             // connect to nfc
-            run_nfc(pn532_io, err);
+            struct nfc_resp r = run_nfc(pn532_io, err);
+            ESP_LOGI(TAG,"sending response of length %d", r.length);
+            ESP_LOG_BUFFER_HEX(TAG,r.uid,r.length);
         }
     }
 }
