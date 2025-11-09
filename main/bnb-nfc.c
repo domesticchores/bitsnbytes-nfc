@@ -16,7 +16,7 @@
 #define RESET_PIN           (-1)
 #define IRQ_PIN             (-1)
 
-#define NFC_TIMEOUT         (800) // 0 is block until ID is found
+#define NFC_TIMEOUT         (0) // 0 is block until ID is found
 
 #define RCV_HOST            SPI2_HOST // HSPI
 #define GPIO_MOSI           23
@@ -127,13 +127,13 @@ void app_main() {
     init_uart();
     
     while (1) {
-        // tx_payload[7] = (uint8_t)(1);
+        uint8_t *tx_payload = (uint8_t *) malloc(PI_UART_RX_BUFFER_SIZE);
         
-        int rx_len = uart_read_bytes(PI_UART_PORT_NUM, response.uid, PAYLOAD_SIZE, 50 / portTICK_PERIOD_MS);
+        int rx_len = uart_read_bytes(PI_UART_PORT_NUM, tx_payload, PAYLOAD_SIZE, 50 / portTICK_PERIOD_MS);
         
         if (rx_len == PAYLOAD_SIZE) {
             ESP_LOGI(TAG, "ACK Received from Pi (RX): Valid 8-byte packet.");
-            ESP_LOG_BUFFER_HEXDUMP(TAG, response.uid, response.length, ESP_LOG_INFO);
+            ESP_LOG_BUFFER_HEXDUMP(TAG, tx_payload, sizeof(tx_payload), ESP_LOG_INFO);
 
             response = run_nfc();
 
