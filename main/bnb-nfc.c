@@ -8,7 +8,8 @@
 #include "esp_log.h"
 #include "driver/gpio.h"
 #include "driver/spi_slave.h" 
-#include "driver/i2c.h"       
+#include "driver/i2c.h"    
+#include "driver/uart.h"   
 
 #define SCL_PIN             (22)
 #define SDA_PIN             (21)
@@ -41,48 +42,39 @@ struct nfc_resp {
 
 pn532_io_t pn532_io; 
 
-int err_count = 0;
 
-void i2c_bus_recovery() {
-    ESP_LOGE(I2C_TAG, "!!! I2C Bus Locked Up. Attempting recovery...");
-    
-    // De-initialize and re-initialize the I2C driver (to clear any internal state)
-    i2c_driver_delete(0);
-    
-    // Temporarily set SDA/SCL pins to GPIO mode
-    gpio_set_direction(SCL_PIN, GPIO_MODE_OUTPUT_OD);
-    gpio_set_direction(SDA_PIN, GPIO_MODE_INPUT_OUTPUT_OD);
-    
-    // Drive SCL and SDA high (due to pull-ups, but drive high for safety)
-    gpio_set_level(SCL_PIN, 1);
-    gpio_set_level(SDA_PIN, 1);
-    vTaskDelay(pdMS_TO_TICKS(50));
-    
-    // Clock SCL up to 9 times to force the slave to release SDA
-    for (int i = 0; i < 9; i++) {
-        if (gpio_get_level(SDA_PIN)) {
-            ESP_LOGW(I2C_TAG, "SDA released on clock %d.", i + 1);
-            break; 
-        }
-        gpio_set_level(SCL_PIN, 0);
-        vTaskDelay(pdMS_TO_TICKS(1));
-        gpio_set_level(SCL_PIN, 1);
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-    
-    // Re-initialize the I2C driver (using the existing i2c_master_master_master_master_master_driver_install function which is normally called by the driver)
-    i2c_config_t i2c_conf = {
-        .mode = I2C_MODE_MASTER,
-        .sda_io_num = SDA_PIN,
-        .scl_io_num = SCL_PIN,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = 400000,
+#define PI_UART_TX_PIN 17
+#define PI_UART_RX_PIN 16
+#define PI_UART_PORT_NUM UART_NUM_2
+#define PI_UART_BAUD_RATE 9600
+
+static const int PI_UART_RX_BUFFER_SIZE = 256; 
+static const int PI_UART_TX_BUFFER_SIZE = 256; 
+
+#define PAYLOAD_SIZE 7
+
+
+void init_uart() {
+    ESP_LOGI(TAG, "Initializing UART for %d-byte binary communication.", PAYLOAD_SIZE);
+
+    ESP_ERROR_CHECK(uart_driver_install(PI_UART_PORT_NUM, PI_UART_RX_BUFFER_SIZE, PI_UART_TX_BUFFER_SIZE, 0, NULL, 0));
+
+    uart_config_t pi_uart_cfg = {
+        .baud_rate = PI_UART_BAUD_RATE,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
     };
-    i2c_param_config(0, &i2c_conf);
-    i2c_driver_install(0, I2C_MODE_MASTER, 0, 0, 0);
-    
-    ESP_LOGI(I2C_TAG, "I2C Bus recovery complete. Re-initializing PN532...");
+    ESP_ERROR_CHECK(uart_param_config(PI_UART_PORT_NUM, &pi_uart_cfg));
+
+    ESP_ERROR_CHECK(uart_set_pin(PI_UART_PORT_NUM, PI_UART_TX_PIN, PI_UART_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+
+    ESP_LOGI(TAG, "UART initialized. Sending %d-byte payloads.", PAYLOAD_SIZE);
+}
+
+int uart_send_data(const uint8_t* data) {
+    return uart_write_bytes(PI_UART_PORT_NUM, (const char*)data, PAYLOAD_SIZE);
 }
 
 void pn532_i2c_init() {
@@ -118,41 +110,11 @@ struct nfc_resp run_nfc() {
         ESP_LOG_BUFFER_HEX_LEVEL(TAG, r.uid, r.length, ESP_LOG_INFO);
     } else {
         ESP_LOGE(TAG, "Error reading UID: %d: %s", err, esp_err_to_name(err));
-        
-        if (err != 263) {
-            err_count++;
-            if (err_count >= 5) 
-                i2c_bus_recovery();
-        }
         memset(r.uid,0xFF,MAX_UID_LEN);
         r.length = 0;
     }
 
     return r;
-}
-
-void spi_slave_init() {
-    spi_bus_config_t buscfg = {
-        .mosi_io_num = GPIO_MOSI,
-        .miso_io_num = GPIO_MISO,
-        .sclk_io_num = GPIO_SCLK,
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
-    };
-
-    spi_slave_interface_config_t slvcfg = {
-        .mode = 0,
-        .spics_io_num = GPIO_CS,
-        .queue_size = 3,
-        .flags = 0,
-    };
-
-    gpio_set_pull_mode(GPIO_MOSI, GPIO_PULLUP_ONLY);
-    gpio_set_pull_mode(GPIO_SCLK, GPIO_PULLUP_ONLY);
-    gpio_set_pull_mode(GPIO_CS, GPIO_PULLUP_ONLY);
-
-    ESP_ERROR_CHECK(spi_slave_initialize(RCV_HOST, &buscfg, &slvcfg, SPI_DMA_DISABLED));
-    ESP_LOGI(SPI_TAG, "SPI initialized");
 }
 
 void app_main() {
@@ -162,60 +124,25 @@ void app_main() {
     memset(&response, 0, sizeof(struct nfc_resp));
 
     pn532_i2c_init();
-    spi_slave_init();
-
-    // aligned is good practice apparently
-    __attribute__((aligned(4))) static char tx_buffer[TRANSACTION_LEN]; 
-    __attribute__((aligned(4))) static char rx_buffer[TRANSACTION_LEN]; 
+    init_uart();
     
-    spi_slave_transaction_t t = {
-        .length = TRANSACTION_LEN * 8,
-        .tx_buffer = tx_buffer,       
-        .rx_buffer = rx_buffer,       
-    };
-
     while (1) {
-        memset(tx_buffer, 0, TRANSACTION_LEN);
-        memset(rx_buffer, 0, TRANSACTION_LEN);
+        // tx_payload[7] = (uint8_t)(1);
         
-        tx_buffer[0] = 0x00; 
+        int rx_len = uart_read_bytes(PI_UART_PORT_NUM, response.uid, PAYLOAD_SIZE, 50 / portTICK_PERIOD_MS);
         
-        ESP_LOGI(TAG, "Waiting for NFC trigger...");
-        
-        err = spi_slave_transmit(RCV_HOST, &t, portMAX_DELAY);
-
-        if (err != ESP_OK) {
-            ESP_LOGE(SPI_TAG, "SPI Signal Error: %s", esp_err_to_name(err));
-            vTaskDelay(pdMS_TO_TICKS(100));
-            continue;
-        }
-
-        if (rx_buffer[0] == 0x01) {
-            ESP_LOGI(SPI_TAG, "Trigger received");
+        if (rx_len == PAYLOAD_SIZE) {
+            ESP_LOGI(TAG, "ACK Received from Pi (RX): Valid 8-byte packet.");
+            ESP_LOG_BUFFER_HEXDUMP(TAG, response.uid, response.length, ESP_LOG_INFO);
 
             response = run_nfc();
 
-            tx_buffer[0] = (response.length > 0) ? response.length : 0xFF; 
-            
-            if (response.length > 0) {
-                memcpy(tx_buffer, response.uid, response.length);
-            }
-            
-            ESP_LOGI(SPI_TAG, "NFC done! Waiting for next signal to dump data");
-            
-            err = spi_slave_transmit(RCV_HOST, &t, portMAX_DELAY);
-            
-            if (err == ESP_OK) {
-                ESP_LOGI(SPI_TAG, "Dumped Data (length %d):", tx_buffer[0]);
-                ESP_LOG_BUFFER_HEX_LEVEL(SPI_TAG, tx_buffer, TRANSACTION_LEN, ESP_LOG_INFO);
-            } else {
-                ESP_LOGE(SPI_TAG, "Failed to send response: %s", esp_err_to_name(err));
-            }
-            
-        } else {
-            ESP_LOGI(SPI_TAG, "Non-trigger command (0x%02X) received. Waiting.", (uint8_t)rx_buffer[0]);
+            uart_send_data(response.uid);
+            ESP_LOG_BUFFER_HEXDUMP(TAG, response.uid, response.length, ESP_LOG_DEBUG);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(2000));
     }
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
 }

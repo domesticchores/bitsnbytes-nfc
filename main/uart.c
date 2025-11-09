@@ -16,7 +16,7 @@
 #define IRQ_PIN             (-1)
 
 #define NFC_TIMEOUT         (300)
-#define MAX_UID_LENGTH      (10)
+#define MAX_UID_LENGTH      (7)
 
 #include "sdkconfig.h"
 #include "pn532_driver_i2c.h"
@@ -59,7 +59,7 @@ struct nfc_resp run_nfc() {
 
     ESP_LOGI(TAG, "Waiting for ISO14443A Card...");
 
-    err = pn532_read_passive_target_id(&pn532_io, PN532_BRTY_ISO14443A_106KBPS, r.uid, &r.length, NFC_TIMEOUT);
+    err = pn532_read_passive_target_id(&pn532_io, PN532_BRTY_ISO14443A_106KBPS, r.uid, &r.length, 0);
 
     if (ESP_OK == err) {
         ESP_LOGI(TAG, "UID Length: %d", r.length);
@@ -111,6 +111,8 @@ void app_main() {
     init_uart();
 
     vTaskDelay(pdMS_TO_TICKS(500)); 
+    struct nfc_resp response;
+    memset(&response, 0, sizeof(struct nfc_resp));
 
     uint8_t *data = (uint8_t *) malloc(PI_UART_RX_BUFFER_SIZE);
     
@@ -128,10 +130,10 @@ void app_main() {
             ESP_LOGI(UART_TAG, "ACK Received from Pi (RX): Valid 8-byte packet.");
             ESP_LOG_BUFFER_HEXDUMP(TAG, data, rx_len, ESP_LOG_INFO);
 
-            struct nfc_resp r = run_nfc();
+            response = run_nfc();
 
-            uart_send_data(r.uid);
-            ESP_LOG_BUFFER_HEXDUMP(UART_TAG, r.uid, r.length, ESP_LOG_DEBUG);
+            uart_send_data(response.uid);
+            ESP_LOG_BUFFER_HEXDUMP(UART_TAG, response.uid, response.length, ESP_LOG_DEBUG);
         }
 
         vTaskDelay(pdMS_TO_TICKS(2000));
