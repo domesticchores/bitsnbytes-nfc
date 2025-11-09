@@ -15,7 +15,7 @@
 #define RESET_PIN           (-1)
 #define IRQ_PIN             (-1)
 
-#define NFC_TIMEOUT         (100) // 0 is block until ID is found
+#define NFC_TIMEOUT         (800) // 0 is block until ID is found
 
 #define RCV_HOST            SPI2_HOST // HSPI
 #define GPIO_MOSI           23
@@ -24,7 +24,7 @@
 #define GPIO_CS             5
 
 #define MAX_UID_LEN         7
-#define TRANSACTION_LEN     8         
+#define TRANSACTION_LEN     7
 
 #include "sdkconfig.h"
 #include "pn532_driver_i2c.h"
@@ -198,7 +198,7 @@ void app_main() {
             tx_buffer[0] = (response.length > 0) ? response.length : 0xFF; 
             
             if (response.length > 0) {
-                memcpy(&tx_buffer[1], response.uid, response.length);
+                memcpy(tx_buffer, response.uid, response.length);
             }
             
             ESP_LOGI(SPI_TAG, "NFC done! Waiting for next signal to dump data");
@@ -206,10 +206,10 @@ void app_main() {
             err = spi_slave_transmit(RCV_HOST, &t, portMAX_DELAY);
             
             if (err == ESP_OK) {
-                ESP_LOGI(SPI_TAG, "Response sent successfully: %d).", tx_buffer[0]);
+                ESP_LOGI(SPI_TAG, "Dumped Data (length %d):", tx_buffer[0]);
                 ESP_LOG_BUFFER_HEX_LEVEL(SPI_TAG, tx_buffer, TRANSACTION_LEN, ESP_LOG_INFO);
             } else {
-                 ESP_LOGE(SPI_TAG, "Failed to send response: %s", esp_err_to_name(err));
+                ESP_LOGE(SPI_TAG, "Failed to send response: %s", esp_err_to_name(err));
             }
             
         } else {
