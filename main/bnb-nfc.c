@@ -1,171 +1,166 @@
-// NFC reader module for CSH Bits n' Bytes
-// based on example code from https://github.com/Garag/esp-idf-pn532/tree/main
-
-
 #include <stdio.h>
-#include <stdlib.h>
-#include <esp_log.h>
-
-#include <fcntl.h>
-#include <unistd.h>
-#include <errno.h>
 #include <stdint.h>
 #include <string.h>
-#include <sys/ioctl.h>
-
-#include "ext_vfs.h"
-#include "ioctl/esp_spi_ioctl.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "esp_log.h"
+#include "driver/gpio.h"
+#include "driver/spi_slave.h" 
+#include "driver/i2c.h"       
+
+#define SCL_PIN             (22)
+#define SDA_PIN             (21)
+#define RESET_PIN           (-1)
+#define IRQ_PIN             (-1)
+
+#define RCV_HOST            SPI2_HOST // HSPI
+#define GPIO_MOSI           23
+#define GPIO_MISO           19
+#define GPIO_SCLK           18
+#define GPIO_CS             5
+
+#define MAX_UID_LEN         7
+#define TRANSACTION_LEN     8         
+
 #include "sdkconfig.h"
 #include "pn532_driver_i2c.h"
-#include "pn532_driver_hsu.h"
-#include "pn532_driver_spi.h"
 #include "pn532.h"
 
-#include "driver/i2c.h"
-#include "esp_log.h"
-
-// we are NOT using IRQ for this module. ensure it is not set to interrupt in the sdkconfig.
-#define SCL_PIN    (22)
-#define SDA_PIN    (21)
-#define RESET_PIN  (-1)
-#define IRQ_PIN    (-1)
-
-#define SPI_DEVICE_CLOCK        (1000000)
-#define SPI_DEVICE_CS_PIN       (5)
-#define SPI_DEVICE_SCLK_PIN     (18)
-#define SPI_DEVICE_MOSI_PIN     (23)
-#define SPI_DEVICE_MISO_PIN     (19)
-
-#define SPI_RECV_BUF_SIZE       (32)
-
-#define SPI_DEVICE "/dev/spi/2"
-
-
-static const char *TAG = "bnb_nfc";
-static const char *I2C_TAG = "I2C";
-static const char *SPI_TAG = "SPI";
+static const char *TAG = "NFC_APP";
+static const char *SPI_TAG = "SPI_SLAVE";
+static const char *I2C_TAG = "I2C_NFC";
 
 struct nfc_resp {
-    uint8_t uid[7];
+    uint8_t uid[MAX_UID_LEN];
     uint8_t length;
 };
 
-struct nfc_resp run_nfc(pn532_io_t pn532_io,esp_err_t err) {
-    uint8_t uid[7] = {0};
-    uint8_t uid_length = sizeof(uid);
+pn532_io_t pn532_io; 
 
-    ESP_LOGI(TAG, "Waiting for an ISO14443A Card ...");
-
-    // if the uid is 4 bytes (Mifare Classic) or 7 bytes (Mifare Ultralight)
-    err = pn532_read_passive_target_id(&pn532_io, PN532_BRTY_ISO14443A_106KBPS, uid, &uid_length, 1000);
-
-    if (ESP_OK == err)
-    {
-        struct nfc_resp r = {0};
-        ESP_LOG_BUFFER_HEX_LEVEL(TAG, uid, uid_length, ESP_LOG_INFO);
-        memcpy(r.uid,uid,sizeof(uid));
-        r.length = sizeof(uid);
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-        return r;
-    } else {
-        struct nfc_resp r = {0};
-        ESP_LOGI(TAG,"NULL");
-        return r;
-        
-    }
-}
-
-void app_main()
-{
-    pn532_io_t pn532_io;
+void pn532_i2c_init() {
     esp_err_t err;
-
-    ESP_LOGI("INIT", "Loading bitsnbytes NFC for PN532");
-
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-
-    // load in I2C mode
-    ESP_LOGI(I2C_TAG, "init PN532 in I2C mode");
+    
+    ESP_LOGI(I2C_TAG, "Initializing PN532...");
     ESP_ERROR_CHECK(pn532_new_driver_i2c(SDA_PIN, SCL_PIN, RESET_PIN, IRQ_PIN, 0, &pn532_io));
 
-    // ensure its loaded before doing anything
     do {
         err = pn532_init(&pn532_io);
         if (err != ESP_OK) {
-            ESP_LOGW(I2C_TAG, "failed to initialize PN532");
+            ESP_LOGW(I2C_TAG, "Failed to initialize PN532. Retrying...");
             pn532_release(&pn532_io);
-            vTaskDelay(1000 / portTICK_PERIOD_MS);
+            vTaskDelay(pdMS_TO_TICKS(1000));
         }
-    } while(err != ESP_OK);
+    } while (err != ESP_OK);
 
-    ESP_LOGI(I2C_TAG, "get firmware version");
     uint32_t version_data = 0;
-    do {
-        err = pn532_get_firmware_version(&pn532_io, &version_data);
-        if (ESP_OK != err) {
-            ESP_LOGI(I2C_TAG, "Didn't find PN53x board");
-            pn532_reset(&pn532_io);
-            vTaskDelay(1000 / portTICK_PERIOD_MS);
-        }
-    } while (ESP_OK != err);
+    ESP_ERROR_CHECK(pn532_get_firmware_version(&pn532_io, &version_data));
+    ESP_LOGI(I2C_TAG, "PN53x Found (Ver. %d.%d)", (int)(version_data >> 16) & 0xFF, (int)(version_data >> 8) & 0xFF);
+}
 
-    // Log firmware infos
-    ESP_LOGI(I2C_TAG, "Found chip PN5%x", (unsigned int)(version_data >> 24) & 0xFF);
-    ESP_LOGI(I2C_TAG, "Firmware ver. %d.%d", (int)(version_data >> 16) & 0xFF, (int)(version_data >> 8) & 0xFF);
+struct nfc_resp run_nfc() {
+    struct nfc_resp r = {{0}, 0}; 
+    esp_err_t err;
 
-    // init SPI
-       int fd;
-    int ret;
-    spi_cfg_t cfg;
-    const char device[] = SPI_DEVICE;
-    __attribute__((aligned(4))) char recv_buffer[SPI_RECV_BUF_SIZE];
+    ESP_LOGI(TAG, "Waiting for ISO14443A Card...");
 
-    ext_vfs_init();
+    err = pn532_read_passive_target_id(&pn532_io, PN532_BRTY_ISO14443A_106KBPS, r.uid, &r.length, 100);
 
-    fd = open(device, O_RDWR);
-    if (fd < 0) {
-        ESP_LOGI(SPI_TAG,"Opening device %s for writing failed, errno=%d.\n", device, errno);
-        return;
+    if (ESP_OK == err) {
+        ESP_LOGI(TAG, "UID Length: %d", r.length);
+        ESP_LOG_BUFFER_HEX_LEVEL(TAG, r.uid, r.length, ESP_LOG_INFO);
     } else {
-        ESP_LOGI(SPI_TAG,"Opening device %s for writing OK, fd=%d.\n", device, fd);
+        ESP_LOGE(TAG, "Error reading UID: %s", esp_err_to_name(err));
+        r.length = 0;
     }
 
-    cfg.flags = SPI_MODE_0;
-    cfg.cs_pin = SPI_DEVICE_CS_PIN;
-    cfg.sclk_pin = SPI_DEVICE_SCLK_PIN;
-    cfg.mosi_pin = SPI_DEVICE_MOSI_PIN;
-    cfg.miso_pin = SPI_DEVICE_MISO_PIN;
-    cfg.master.clock = SPI_DEVICE_CLOCK;
-    ret = ioctl(fd, SPIIOCSCFG, &cfg);
-    if (ret < 0) {
-        ESP_LOGI(SPI_TAG,"Configure SPI failed, errno=%d.\n", errno);
-        return;
-    }
-    // loop infinitely. 
-    while (1)
-    {
-        spi_ex_msg_t msg;
+    return r;
+}
 
-        memset(recv_buffer, 0, SPI_RECV_BUF_SIZE);
-        msg.rx_buffer = recv_buffer;
-        msg.tx_buffer = NULL;
-        msg.size = SPI_RECV_BUF_SIZE;
-        ret = ioctl(fd, SPIIOCEXCHANGE, &msg);
-        if (ret < 0) {
-            ESP_LOGI(SPI_TAG,"Receive total %d bytes from device failed, errno=%d", SPI_RECV_BUF_SIZE, errno);
-            return;
-        } else {
-            if (msg.size) {
-                ESP_LOGI(SPI_TAG,"Receive total %d bytes from device: %s\n", (int)msg.size, recv_buffer);
-            }
-            // connect to nfc
-            struct nfc_resp r = run_nfc(pn532_io, err);
-            ESP_LOGI(TAG,"sending response of length %d", r.length);
-            ESP_LOG_BUFFER_HEX(TAG,r.uid,r.length);
+void spi_slave_init() {
+    spi_bus_config_t buscfg = {
+        .mosi_io_num = GPIO_MOSI,
+        .miso_io_num = GPIO_MISO,
+        .sclk_io_num = GPIO_SCLK,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+    };
+
+    spi_slave_interface_config_t slvcfg = {
+        .mode = 0,
+        .spics_io_num = GPIO_CS,
+        .queue_size = 3,
+        .flags = 0,
+    };
+
+    gpio_set_pull_mode(GPIO_MOSI, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(GPIO_SCLK, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(GPIO_CS, GPIO_PULLUP_ONLY);
+
+    ESP_ERROR_CHECK(spi_slave_initialize(RCV_HOST, &buscfg, &slvcfg, SPI_DMA_DISABLED));
+    ESP_LOGI(SPI_TAG, "SPI initialized");
+}
+
+void app_main() {
+    esp_err_t err;
+
+    pn532_i2c_init();
+
+    spi_slave_init();
+
+    // aligned is good practice apparently
+    __attribute__((aligned(4))) static char tx_buffer[TRANSACTION_LEN]; 
+    __attribute__((aligned(4))) static char rx_buffer[TRANSACTION_LEN]; 
+    
+    spi_slave_transaction_t t = {
+        .length = TRANSACTION_LEN * 8,
+        .tx_buffer = tx_buffer,       
+        .rx_buffer = rx_buffer,       
+    };
+
+    while (1) {
+        memset(tx_buffer, 0, TRANSACTION_LEN);
+        memset(rx_buffer, 0, TRANSACTION_LEN);
+        
+        tx_buffer[0] = 0x00; 
+        
+        ESP_LOGI(TAG, "Waiting for NFC trigger...");
+        
+        err = spi_slave_transmit(RCV_HOST, &t, portMAX_DELAY);
+
+        if (err != ESP_OK) {
+            ESP_LOGE(SPI_TAG, "SPI Signal Error: %s", esp_err_to_name(err));
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
         }
+
+        if (rx_buffer[0] == 0x01) {
+            ESP_LOGI(SPI_TAG, "Trigger received");
+
+            struct nfc_resp response = run_nfc();
+
+            tx_buffer[0] = (response.length > 0) ? response.length : 0xFF; 
+            
+            if (response.length > 0) {
+                memcpy(&tx_buffer[1], response.uid, response.length);
+            }
+            
+            ESP_LOGI(SPI_TAG, "NFC done!");
+            
+            err = spi_slave_transmit(RCV_HOST, &t, portMAX_DELAY);
+            
+            if (err == ESP_OK) {
+                ESP_LOGI(SPI_TAG, "Response sent successfully: %d).", tx_buffer[0]);
+                ESP_LOG_BUFFER_HEX_LEVEL(SPI_TAG, tx_buffer, TRANSACTION_LEN, ESP_LOG_INFO);
+            } else {
+                 ESP_LOGE(SPI_TAG, "Failed to send response: %s", esp_err_to_name(err));
+            }
+            
+        } else {
+            ESP_LOGI(SPI_TAG, "Non-trigger command (0x%02X) received. Waiting.", (uint8_t)rx_buffer[0]);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
