@@ -7,7 +7,6 @@
 
 #include "esp_log.h"
 #include "driver/gpio.h"
-#include "driver/spi_slave.h" 
 #include "driver/i2c.h"    
 #include "driver/uart.h"   
 
@@ -17,22 +16,14 @@
 #define IRQ_PIN             (-1)
 
 #define NFC_TIMEOUT         (0) // 0 is block until ID is found
-
-#define RCV_HOST            SPI2_HOST // HSPI
-#define GPIO_MOSI           23
-#define GPIO_MISO           19
-#define GPIO_SCLK           18
-#define GPIO_CS             5
-
 #define MAX_UID_LEN         7
-#define TRANSACTION_LEN     7
 
 #include "sdkconfig.h"
 #include "pn532_driver_i2c.h"
 #include "pn532.h"
 
 static const char *TAG = "BNB_MAIN";
-static const char *SPI_TAG = "BNB_SPI";
+static const char *UART_TAG = "BNB_UART";
 static const char *I2C_TAG = "BNB_I2C";
 
 struct nfc_resp {
@@ -42,20 +33,19 @@ struct nfc_resp {
 
 pn532_io_t pn532_io; 
 
-
 #define PI_UART_TX_PIN 17
 #define PI_UART_RX_PIN 16
 #define PI_UART_PORT_NUM UART_NUM_2
 #define PI_UART_BAUD_RATE 9600
 
+// minimum size is 128
 static const int PI_UART_RX_BUFFER_SIZE = 256; 
 static const int PI_UART_TX_BUFFER_SIZE = 256; 
 
 #define PAYLOAD_SIZE 7
 
-
 void init_uart() {
-    ESP_LOGI(TAG, "Initializing UART for %d-byte binary communication.", PAYLOAD_SIZE);
+    ESP_LOGI(UART_TAG, "Initializing UART for %d-byte binary communication.", PAYLOAD_SIZE);
 
     ESP_ERROR_CHECK(uart_driver_install(PI_UART_PORT_NUM, PI_UART_RX_BUFFER_SIZE, PI_UART_TX_BUFFER_SIZE, 0, NULL, 0));
 
@@ -70,7 +60,7 @@ void init_uart() {
 
     ESP_ERROR_CHECK(uart_set_pin(PI_UART_PORT_NUM, PI_UART_TX_PIN, PI_UART_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
-    ESP_LOGI(TAG, "UART initialized. Sending %d-byte payloads.", PAYLOAD_SIZE);
+    ESP_LOGI(UART_TAG, "UART initialized. Sending %d-byte payloads.", PAYLOAD_SIZE);
 }
 
 int uart_send_data(const uint8_t* data) {
@@ -101,15 +91,15 @@ struct nfc_resp run_nfc() {
     struct nfc_resp r = {{0}, 0}; 
     esp_err_t err;
 
-    ESP_LOGI(TAG, "Waiting for ISO14443A Card...");
+    ESP_LOGI(I2C_TAG, "Waiting for ISO14443A Card...");
 
     err = pn532_read_passive_target_id(&pn532_io, PN532_BRTY_ISO14443A_106KBPS, r.uid, &r.length, NFC_TIMEOUT);
 
     if (ESP_OK == err) {
-        ESP_LOGI(TAG, "UID Length: %d", r.length);
-        ESP_LOG_BUFFER_HEX_LEVEL(TAG, r.uid, r.length, ESP_LOG_INFO);
+        ESP_LOGI(I2C_TAG, "UID Length: %d", r.length);
+        ESP_LOG_BUFFER_HEX_LEVEL(I2C_TAG, r.uid, r.length, ESP_LOG_INFO);
     } else {
-        ESP_LOGE(TAG, "Error reading UID: %d: %s", err, esp_err_to_name(err));
+        ESP_LOGE(I2C_TAG, "Error reading UID: %d: %s", err, esp_err_to_name(err));
         memset(r.uid,0xFF,MAX_UID_LEN);
         r.length = 0;
     }
@@ -130,15 +120,21 @@ void app_main() {
         uint8_t *tx_payload = (uint8_t *) malloc(PI_UART_RX_BUFFER_SIZE);
         
         int rx_len = uart_read_bytes(PI_UART_PORT_NUM, tx_payload, PAYLOAD_SIZE, 50 / portTICK_PERIOD_MS);
+
+        ESP_LOGI(UART_TAG, "ACK Received from Pi (RX)! %d", rx_len);
+        if (rx_len > 0) {
+            ESP_LOG_BUFFER_HEX(UART_TAG, tx_payload, sizeof(tx_payload));
+        }
         
-        if (rx_len == PAYLOAD_SIZE) {
-            ESP_LOGI(TAG, "ACK Received from Pi (RX): Valid 8-byte packet.");
-            ESP_LOG_BUFFER_HEXDUMP(TAG, tx_payload, sizeof(tx_payload), ESP_LOG_INFO);
+        // correct length response and first byte is correct
+        if (rx_len == PAYLOAD_SIZE && tx_payload[0] == 0xFF) {
+            ESP_LOGI(UART_TAG, "ACK Received from Pi (RX): Valid 8-byte packet.");
+            ESP_LOG_BUFFER_HEXDUMP(UART_TAG, tx_payload, sizeof(tx_payload), ESP_LOG_INFO);
 
             response = run_nfc();
 
             uart_send_data(response.uid);
-            ESP_LOG_BUFFER_HEXDUMP(TAG, response.uid, response.length, ESP_LOG_DEBUG);
+            ESP_LOG_BUFFER_HEXDUMP(UART_TAG, response.uid, response.length, ESP_LOG_DEBUG);
         }
 
         vTaskDelay(pdMS_TO_TICKS(2000));
